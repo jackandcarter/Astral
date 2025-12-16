@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Astral.GameLogic.Cards;
 using Astral.GameLogic.State;
 
@@ -28,7 +29,7 @@ namespace Astral.GameLogic.Engine
         public void ApplyAction(IGameAction action)
         {
             RuleValidator.EnsureActionIsValid(State, action);
-            action.Resolve(State, Rng, EffectResolver);
+            action.Resolve(State, Rng, EffectResolver, TurnManager);
             State.IncrementActionCounter();
         }
 
@@ -40,7 +41,7 @@ namespace Astral.GameLogic.Engine
 
     public interface IGameAction
     {
-        void Resolve(BattleState state, DeterministicRng rng, EffectResolver resolver);
+        void Resolve(BattleState state, DeterministicRng rng, EffectResolver resolver, TurnManager turnManager);
     }
 
     /// <summary>
@@ -50,6 +51,10 @@ namespace Astral.GameLogic.Engine
     {
         private readonly RuleValidator _ruleValidator;
         private readonly EffectResolver _effectResolver;
+
+        private const int BaseActionsPerTurn = 1;
+        private const int CardsDrawnPerTurn = 1;
+        private const int BaseResourceGainPerTurn = 1;
 
         public TurnManager(RuleValidator ruleValidator, EffectResolver effectResolver)
         {
@@ -79,20 +84,100 @@ namespace Astral.GameLogic.Engine
     {
         public void EnsureActionIsValid(BattleState state, IGameAction action)
         {
-            // Placeholder for full validation logic defined by the design docs.
-            // Keeping this explicit avoids burying rules inside UI or MonoBehaviours.
+            if (action is IPlayerAction playerAction)
+            {
+                EnsureActivePlayer(state, playerAction.Player);
+            }
+
+            switch (action)
+            {
+                case DrawCardAction drawAction:
+                    EnsurePhaseAllowsDrawing(state.Turn.CurrentPhase);
+                    EnsureDeckHasCards(state, drawAction.Player, drawAction.Count);
+                    break;
+                case PlayCardAction playAction:
+                    EnsurePhaseAllowsCardPlay(state.Turn.CurrentPhase);
+                    ValidateCardPlay(state, playAction);
+                    break;
+                case AdvancePhaseAction advancePhaseAction:
+                    ValidatePhaseTransition(state.Turn.CurrentPhase, advancePhaseAction.NextPhase);
+                    break;
+                case EndTurnAction:
+                    EnsureEndTurnEligibility(state.Turn.CurrentPhase);
+                    break;
+            }
         }
 
         public void ValidatePhaseTransition(Phase current, Phase next)
         {
-            if (current == Phase.End && next == Phase.Start)
+            var isForward = next switch
             {
-                return;
+                Phase.Start => current == Phase.End,
+                Phase.Main => current == Phase.Start,
+                Phase.Reaction => current == Phase.Main,
+                Phase.End => current == Phase.Reaction,
+                _ => false
+            };
+
+            if (!isForward)
+            {
+                throw new InvalidOperationException($"Cannot transition from {current} to {next}.");
+            }
+        }
+
+        private static void EnsureActivePlayer(BattleState state, PlayerId player)
+        {
+            if (!state.Turn.ActivePlayer.Equals(player))
+            {
+                throw new InvalidOperationException($"It is not player {player}'s turn.");
+            }
+        }
+
+        private static void EnsurePhaseAllowsDrawing(Phase currentPhase)
+        {
+            if (currentPhase != Phase.Start && currentPhase != Phase.Main)
+            {
+                throw new InvalidOperationException($"Cannot draw cards during {currentPhase} phase.");
+            }
+        }
+
+        private static void EnsurePhaseAllowsCardPlay(Phase currentPhase)
+        {
+            if (currentPhase != Phase.Main)
+            {
+                throw new InvalidOperationException($"Cards can only be played during the Main phase. Current phase: {currentPhase}.");
+            }
+        }
+
+        private static void ValidateCardPlay(BattleState state, PlayCardAction action)
+        {
+            var playerState = state.GetPlayer(action.Player);
+            var card = playerState.Hand.Cards.FirstOrDefault(c => c.InstanceId == action.CardInstanceId);
+            if (card == null)
+            {
+                throw new InvalidOperationException($"Card {action.CardInstanceId} is not in the player's hand.");
             }
 
-            if ((int)next < (int)current)
+            if (playerState.Resource.Current < card.Template.Cost)
             {
-                throw new InvalidOperationException($"Cannot go backwards from {current} to {next}.");
+                throw new InvalidOperationException($"Not enough resources to play {card.Template.Name}.");
+            }
+        }
+
+        private static void EnsureDeckHasCards(BattleState state, PlayerId player, int count)
+        {
+            var playerState = state.GetPlayer(player);
+            if (playerState.Deck.Cards.Count < count)
+            {
+                throw new InvalidOperationException($"Player {player} cannot draw {count} cards; only {playerState.Deck.Cards.Count} remaining in deck.");
+            }
+        }
+
+        private static void EnsureEndTurnEligibility(Phase currentPhase)
+        {
+            if (currentPhase != Phase.Reaction && currentPhase != Phase.End)
+            {
+                throw new InvalidOperationException("Turns can only end after reaching the Reaction or End phase.");
             }
         }
     }
@@ -105,6 +190,11 @@ namespace Astral.GameLogic.Engine
         public void ResolveEffect(BattleState state, EffectReference effect, DeterministicRng rng)
         {
             // Effect resolution is intentionally data-driven; implementations live here, not on Unity prefabs.
+            if (state.Effects.Count == 0)
+            {
+                throw new InvalidOperationException("Cannot resolve an effect when the stack is empty.");
+            }
+
             state.Effects.Pop();
         }
 
@@ -116,6 +206,16 @@ namespace Astral.GameLogic.Engine
         public void ResolveTurnStart(BattleState state)
         {
             // Placeholder for start-of-turn triggers and status effect ticks.
+            var activePlayer = state.GetPlayer(state.Turn.ActivePlayer);
+            activePlayer.Resource.Gain(BaseResourceGainPerTurn);
+            state.Turn.SetActions(BaseActionsPerTurn);
+
+            for (var i = 0; i < CardsDrawnPerTurn; i++)
+            {
+                var drawnCard = activePlayer.Deck.DrawTopCard();
+                activePlayer.Hand.Add(drawnCard);
+            }
+
             foreach (var player in state.Players)
             {
                 foreach (var status in player.StatusEffects)

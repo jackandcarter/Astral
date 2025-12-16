@@ -113,6 +113,28 @@ namespace Astral.GameLogic.State
             ActionCounter++;
         }
 
+        public PlayerState GetPlayer(PlayerId playerId)
+        {
+            var player = Players.FirstOrDefault(p => p.Id.Equals(playerId));
+            if (player == null)
+            {
+                throw new InvalidOperationException($"Player with id {playerId} does not exist in this battle state.");
+            }
+
+            return player;
+        }
+
+        public PlayerState GetOpponent(PlayerId playerId)
+        {
+            var opponent = Players.FirstOrDefault(p => !p.Id.Equals(playerId));
+            if (opponent == null)
+            {
+                throw new InvalidOperationException("Battle state does not contain an opponent.");
+            }
+
+            return opponent;
+        }
+
         public object Clone()
         {
             return new BattleState(this);
