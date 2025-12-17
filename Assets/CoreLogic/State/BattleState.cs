@@ -82,6 +82,7 @@ namespace Astral.GameLogic.State
         public EffectStack Effects { get; }
         public MatchContext Context { get; }
         public int RandomSeed { get; }
+        public int RandomCallCount { get; private set; }
         public int ActionCounter { get; private set; }
 
         public BattleState(
@@ -89,13 +90,15 @@ namespace Astral.GameLogic.State
             TurnState turn,
             EffectStack effects,
             MatchContext context,
-            int randomSeed)
+            int randomSeed,
+            int randomCallCount = 0)
         {
             Players = players.Select(p => (PlayerState)p.Clone()).ToList();
             Turn = (TurnState)turn.Clone();
             Effects = (EffectStack)effects.Clone();
             Context = (MatchContext)context.Clone();
             RandomSeed = randomSeed;
+            RandomCallCount = randomCallCount;
         }
 
         private BattleState(BattleState source)
@@ -105,12 +108,18 @@ namespace Astral.GameLogic.State
             Effects = (EffectStack)source.Effects.Clone();
             Context = (MatchContext)source.Context.Clone();
             RandomSeed = source.RandomSeed;
+            RandomCallCount = source.RandomCallCount;
             ActionCounter = source.ActionCounter;
         }
 
         public void IncrementActionCounter()
         {
             ActionCounter++;
+        }
+
+        public void IncrementRandomCallCount()
+        {
+            RandomCallCount++;
         }
 
         public PlayerState GetPlayer(PlayerId playerId)
@@ -410,15 +419,18 @@ namespace Astral.GameLogic.State
     public class MatchContext : ICloneable
     {
         public IReadOnlyDictionary<string, int> RuleModifiers { get; }
+        public CardRegistry CardRegistry { get; }
 
-        public MatchContext(IReadOnlyDictionary<string, int> ruleModifiers = null)
+        public MatchContext(CardRegistry cardRegistry, IReadOnlyDictionary<string, int> ruleModifiers = null)
         {
+            CardRegistry = (CardRegistry)cardRegistry.Clone();
             RuleModifiers = ruleModifiers ?? new Dictionary<string, int>();
         }
 
         private MatchContext(MatchContext source)
         {
             RuleModifiers = new Dictionary<string, int>(source.RuleModifiers);
+            CardRegistry = (CardRegistry)source.CardRegistry.Clone();
         }
 
         public object Clone()
