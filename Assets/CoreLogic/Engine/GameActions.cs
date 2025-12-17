@@ -57,25 +57,28 @@ namespace Astral.GameLogic.Engine
                 throw new InvalidOperationException($"Card {CardInstanceId} not found in player {Player}'s hand.");
             }
 
-            playerState.Resource.Spend(card.Template.Cost);
+            var template = card.ResolveTemplate(state.Context.CardRegistry);
+
+            playerState.Resource.Spend(template.Cost);
             playerState.Hand.Remove(card);
             playerState.Board.Play(card);
 
-            foreach (var effect in card.Template.BaseEffects)
+            foreach (var effect in template.BaseEffects)
             {
                 var reference = new EffectReference(Player, card, effect.Id);
                 state.Effects.Push(reference);
-                resolver.ResolveEffect(state, reference, rng);
             }
         }
     }
 
-    public class AdvancePhaseAction : IGameAction
+    public class AdvancePhaseAction : IPlayerAction
     {
+        public PlayerId Player { get; }
         public Phase NextPhase { get; }
 
-        public AdvancePhaseAction(Phase nextPhase)
+        public AdvancePhaseAction(PlayerId player, Phase nextPhase)
         {
+            Player = player;
             NextPhase = nextPhase;
         }
 

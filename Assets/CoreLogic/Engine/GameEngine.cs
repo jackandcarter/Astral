@@ -6,6 +6,13 @@ using Astral.GameLogic.State;
 
 namespace Astral.GameLogic.Engine
 {
+    public static class GameRulesConfig
+    {
+        public const int BaseActionsPerTurn = 1;
+        public const int CardsDrawnPerTurn = 1;
+        public const int BaseResourceGainPerTurn = 1;
+    }
+
     /// <summary>
     /// Central coordinator for pure game logic. Unity communicates through runtime managers, not through this class directly.
     /// </summary>
@@ -20,7 +27,7 @@ namespace Astral.GameLogic.Engine
         public GameEngine(BattleState initialState)
         {
             State = (BattleState)initialState.Clone();
-            Rng = new DeterministicRng(initialState.RandomSeed);
+            Rng = new DeterministicRng(State);
             RuleValidator = new RuleValidator();
             EffectResolver = new EffectResolver();
             TurnManager = new TurnManager(RuleValidator, EffectResolver);
@@ -30,6 +37,7 @@ namespace Astral.GameLogic.Engine
         {
             RuleValidator.EnsureActionIsValid(State, action);
             action.Resolve(State, Rng, EffectResolver, TurnManager);
+            EffectResolver.ResolvePendingEffects(State, Rng);
             State.IncrementActionCounter();
         }
 
@@ -51,10 +59,6 @@ namespace Astral.GameLogic.Engine
     {
         private readonly RuleValidator _ruleValidator;
         private readonly EffectResolver _effectResolver;
-
-        private const int BaseActionsPerTurn = 1;
-        private const int CardsDrawnPerTurn = 1;
-        private const int BaseResourceGainPerTurn = 1;
 
         public TurnManager(RuleValidator ruleValidator, EffectResolver effectResolver)
         {
@@ -100,6 +104,7 @@ namespace Astral.GameLogic.Engine
                     ValidateCardPlay(state, playAction);
                     break;
                 case AdvancePhaseAction advancePhaseAction:
+                    EnsureActivePlayer(state, advancePhaseAction.Player);
                     ValidatePhaseTransition(state.Turn.CurrentPhase, advancePhaseAction.NextPhase);
                     break;
                 case EndTurnAction:
@@ -158,9 +163,11 @@ namespace Astral.GameLogic.Engine
                 throw new InvalidOperationException($"Card {action.CardInstanceId} is not in the player's hand.");
             }
 
-            if (playerState.Resource.Current < card.Template.Cost)
+            var template = card.ResolveTemplate(state.Context.CardRegistry);
+
+            if (playerState.Resource.Current < template.Cost)
             {
-                throw new InvalidOperationException($"Not enough resources to play {card.Template.Name}.");
+                throw new InvalidOperationException($"Not enough resources to play {template.Name}.");
             }
         }
 
@@ -187,15 +194,18 @@ namespace Astral.GameLogic.Engine
     /// </summary>
     public class EffectResolver
     {
+        public void ResolvePendingEffects(BattleState state, DeterministicRng rng)
+        {
+            while (state.Effects.Count > 0)
+            {
+                var next = state.Effects.Pop();
+                ResolveEffect(state, next, rng);
+            }
+        }
+
         public void ResolveEffect(BattleState state, EffectReference effect, DeterministicRng rng)
         {
             // Effect resolution is intentionally data-driven; implementations live here, not on Unity prefabs.
-            if (state.Effects.Count == 0)
-            {
-                throw new InvalidOperationException("Cannot resolve an effect when the stack is empty.");
-            }
-
-            state.Effects.Pop();
         }
 
         public void ResolvePhaseTriggers(BattleState state, Phase phase)
@@ -207,10 +217,10 @@ namespace Astral.GameLogic.Engine
         {
             // Placeholder for start-of-turn triggers and status effect ticks.
             var activePlayer = state.GetPlayer(state.Turn.ActivePlayer);
-            activePlayer.Resource.Gain(BaseResourceGainPerTurn);
-            state.Turn.SetActions(BaseActionsPerTurn);
+            activePlayer.Resource.Gain(GameRulesConfig.BaseResourceGainPerTurn);
+            state.Turn.SetActions(GameRulesConfig.BaseActionsPerTurn);
 
-            for (var i = 0; i < CardsDrawnPerTurn; i++)
+            for (var i = 0; i < GameRulesConfig.CardsDrawnPerTurn; i++)
             {
                 var drawnCard = activePlayer.Deck.DrawTopCard();
                 activePlayer.Hand.Add(drawnCard);
@@ -231,21 +241,32 @@ namespace Astral.GameLogic.Engine
     /// </summary>
     public class DeterministicRng
     {
-        private readonly Random _random;
+        private readonly int _seed;
+        private readonly BattleState _state;
 
-        public DeterministicRng(int seed)
+        public DeterministicRng(BattleState state)
         {
-            _random = new Random(seed);
+            _seed = state.RandomSeed;
+            _state = state;
         }
 
         public int Next(int minInclusive, int maxExclusive)
         {
-            return _random.Next(minInclusive, maxExclusive);
+            var randomValue = NextRaw();
+            return minInclusive + Math.Abs(randomValue % (maxExclusive - minInclusive));
         }
 
         public double NextDouble()
         {
-            return _random.NextDouble();
+            var randomValue = NextRaw();
+            return (double)Math.Abs(randomValue % int.MaxValue) / int.MaxValue;
+        }
+
+        private int NextRaw()
+        {
+            var random = new Random(HashCode.Combine(_seed, _state.RandomCallCount));
+            _state.IncrementRandomCallCount();
+            return random.Next();
         }
     }
 
@@ -256,6 +277,7 @@ namespace Astral.GameLogic.Engine
     {
         public static BattleState Create(IReadOnlyList<CardTemplate> playerOneDeck, IReadOnlyList<CardTemplate> playerTwoDeck, int seed)
         {
+            var registry = new CardRegistry(playerOneDeck.Concat(playerTwoDeck));
             var playerStates = new List<PlayerState>
             {
                 BuildPlayer(new PlayerId(0), playerOneDeck),
@@ -264,7 +286,7 @@ namespace Astral.GameLogic.Engine
 
             var turn = new TurnState(new PlayerId(0));
             var effects = new EffectStack();
-            var context = new MatchContext();
+            var context = new MatchContext(registry);
 
             return new BattleState(playerStates, turn, effects, context, seed);
         }
